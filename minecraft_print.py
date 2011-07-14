@@ -12,8 +12,11 @@ import operator
 import codecs
 
 from math import floor
-import readline
-    
+try:
+    import readline
+except:
+    pass
+
 class UsageError(RuntimeError): pass
 class BlockMatchError(RuntimeError): pass
 class PlayerNotFound(RuntimeError): pass
