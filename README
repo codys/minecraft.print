@@ -1,22 +1,65 @@
+---WHAT IS THIS?---
 Minecraft.Print() is a python library for converting defined regions of Minecraft levels to a 3D Printable format.
 
-Includes pymclevel.
-Requires python and numpy (http://docs.scipy.org/doc/numpy/user/install.html or https://github.com/numpy/numpy).
 
-In game: 
-Before running Minecraft.Print() you will need to define the space you wish to print by placing two markers, in-game. The marker configuration is a diamond block, followed by a gold block, followed by an iron block in vertical order (ascending or descending). The coordinates of the diamond block will be used as the marker.
+---REQUIREMENTS/SETUP---
+python    - (http://www.python.org/download/releases/2.6.6/)
+numpy     - (http://docs.scipy.org/doc/numpy/user/install.html)
+pymclevel - (already included)
 
-Running Minecraft.Print():
-Run "python run.py LEVEL_NAME OUTPUT_NAME" - replacing LEVEL_NAME and OUTPUT_NAME with the level you wish to process and the desired output file name. The script will then run and save the STL file in the same directory. If you are on Windows, you will use "run.py LEVEL_NAME OUTPUT_NAME".
 
-Viewing resulting file:
-There are many free programs for viewing STL files. One example: http://meshlab.sourceforge.net
+---INSTRUCTIONS FOR USE---
+Step One:
+    Build something awesome in Minecraft.
 
-Printing:
-If you don't have a 3D Printer of your own, to print to, there are online services that will allow you to upload an STL file and order a print. Two random ones: cloudfab.com and shapeways.com
+Step Two:
+    Define the space you wish to print by placing two markers, in-game. The marker configuration is a diamond block, followed by a gold block, followed by an iron block in vertical order (ascending or descending). The coordinates of the diamond block will be used as the marker.
 
-Show off your creation:
+Step Three Point One:
+    Ensure that the save file is in your normal single player directory (this step really only matters if you are trying to process an SMP level).
+    Windows - C:\Users\[username]\AppData\Roaming\.minecraft\saves
+    Mac     - [username]/Library/Application Support/minecraft/saves
+    Linux   - /home/[username]/.minecraft/saves
+
+Step Three Point Magic:
+    Run the following command from the terminal, replacing [level_name] and [output_name] with the level you wish to process and the desired output file name. The script will then run and save the STL file in the same directory.
+    Windows         - "run.py [level_name] [output_name]"
+    Mac or Linux    - "python run.py [level_name] [output_name]"
+
+
+---VIEWING AN STL FILE---
+MeshLab - http://meshlab.sourceforge.net
+
+
+---PRINTING---
+Option One:
+    Print the STL file using a 3D Printer that you have access to.
+
+Option Two:
+    Use an online service that will allow you to upload an STL file and order a print. 
+    Examples - cloudfab.com and shapeways.com
+
+
+---SHOWING OFF YOUR CREATIONS---
 We figure you already know how to do this.
 
-Sharing:
-So here's the deal. We want to see what awesome stuff you guys are going to print. So drop us a line at hi@minecraftprint.com and let us know how it went. Also, if you have something really awesome, consider putting the model up on thingiverse.com for others to print.
+
+---SHARING YOUR CREATIONS---
+So here's the deal. We want to see what awesome stuff you guys are going to print. So drop us a line at hi@minecraftprint.com and let us know how it went. Also, if you have something really awesome, consider putting the model up on thingiverse.com for others to see and print.
+
+
+---FOR MORE INFORMATION---
+minecraftprint.com
+media.mit.edu/research/groups/1448/minecraftprint
+
+
+---CREDITS---
+Cody Sumter 		- Conspirator One 	- codysumter.com 			- twitter@codys 
+Jason Boggess 		- Conspirator Two 	- jasonboggess.com 			- twitter@jbogblog
+Dr Sandy Pentland 	- Advisor 			- web.media.mit.edu/~sandy/ - 
+Geoffry Sumter 		- Code Cleanup 		- geoffrysumter.com 		- twitter@geoffrys
+Mike Solomon		- Tester 			- 							- twitter@mikesol314
+Adam Longwill		- Tester 			- gplus.to/AdamLongwill		-
+Justin Smith		- Tester 			- 							-
+codewarrior 		- pymclevel creator	- github.com/codewarrior0 	- 
+Notch 				- Minecraft god 	- minecraft.com 			- twitter@notch
