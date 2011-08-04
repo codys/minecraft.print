@@ -4,7 +4,7 @@ Minecraft.Print() is a python library for converting defined regions of Minecraf
 
 ---REQUIREMENTS/SETUP---
 python    - (http://www.python.org/download/releases/2.6.6/)
-numpy     - (http://docs.scipy.org/doc/numpy/user/install.html)
+numpy     - (http://sourceforge.net/projects/numpy/files/OldFiles/ or http://docs.scipy.org/doc/numpy/user/install.html)
 pymclevel - (already included)
 
 
@@ -22,7 +22,7 @@ Step Three Point One:
     Linux   - /home/[username]/.minecraft/saves
 
 Step Three Point Magic:
-    Run the following command from the terminal, replacing [level_name] and [output_name] with the level you wish to process and the desired output file name. The script will then run and save the STL file in the same directory.
+    Run the following command from the terminal, replacing [level_name] and [output_name] with the level you wish to process and the desired output file name. The script will then run and save the STL file in the same directory. Note: the script does not need to be in the same folder as your save files (it knows where to find them).
     Windows         - "run.py [level_name] [output_name]"
     Mac or Linux    - "python run.py [level_name] [output_name]"
 
@@ -54,12 +54,12 @@ media.mit.edu/research/groups/1448/minecraftprint
 
 
 ---CREDITS---
-Cody Sumter 		- Conspirator One 	- codysumter.com 			- twitter@codys 
-Jason Boggess 		- Conspirator Two 	- jasonboggess.com 			- twitter@jbogblog
-Dr Sandy Pentland 	- Advisor 			- web.media.mit.edu/~sandy/ - 
-Geoffry Sumter 		- Code Cleanup 		- geoffrysumter.com 		- twitter@geoffrys
-Mike Solomon		- Tester 			- 							- twitter@mikesol314
-Adam Longwill		- Tester 			- gplus.to/AdamLongwill		-
-Justin Smith		- Tester 			- 							-
-codewarrior 		- pymclevel creator	- github.com/codewarrior0 	- 
-Notch 				- Minecraft god 	- minecraft.com 			- twitter@notch
+Cody Sumter         - Conspirator One   - codysumter.com
+Jason Boggess       - Conspirator Two   - jasonboggess.com
+Dr Sandy Pentland   - Advisor           - web.media.mit.edu/~sandy
+Geoffry Sumter      - Code Cleanup      - geoffrysumter.com
+Mike Solomon        - Tester            - 
+Adam Longwill       - Tester            - gplus.to/AdamLongwill
+Justin Smith        - Tester            - 
+codewarrior         - pymclevel creator - github.com/codewarrior0
+Notch               - Minecraft god     - minecraft.com
