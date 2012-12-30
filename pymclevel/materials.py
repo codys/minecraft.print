@@ -1,1031 +1,867 @@
-'''
-from materials import classicMaterials, materials
-'''
-from numpy import *
-NOTEX = (0xB0, 0x80)
+
+from logging import getLogger
+from numpy import zeros, rollaxis, indices
+import traceback
+from os.path import join
+from collections import defaultdict
+from pprint import pformat
+
+import os
+
+NOTEX = (0x90, 0xD0)
+
+import yaml
+
+log = getLogger(__file__)
 
 
 class Block(object):
-    def __init__(self, materials, blockID, blockData = 0, **kw):
-        """
-        Defines a blocktype.
-        Keyword parameters:
-            name: Human-readable name of the block
-            brightness: 0-15 (default 0)
-            opacity: 0-15 (default 15)
-            aka: Additional keywords to use for searching
-            color: (r, g, b) tuple. 0-255.  default (0x77, 0x77, 0x77)
-            texture: pair of integers 0-255 with pixel coordinates into terrain.png
-                can be a 6-let of pairs, one pair for each face, 
-                with faces in the order -X +X -Y +Y -Z +Z
-                
-        """
-        object.__init__(self)
+    """
+    Value object representing an (id, data) pair.
+    Provides elements of its parent material's block arrays.
+    Blocks will have (name, ID, blockData, aka, color, brightness, opacity, blockTextures)
+    """
+
+    def __str__(self):
+        return "<Block {name} ({id}:{data}) hasVariants:{ha}>".format(
+            name=self.name, id=self.ID, data=self.blockData, ha=self.hasVariants)
+
+    def __repr__(self):
+        return str(self)
+
+    def __cmp__(self, other):
+        if not isinstance(other, Block):
+            return -1
+        key = lambda a: a and (a.ID, a.blockData)
+        return cmp(key(self), key(other))
+
+    hasVariants = False  # True if blockData defines additional blocktypes
+
+    def __init__(self, materials, blockID, blockData=0):
         self.materials = materials
-        self.name = kw.pop('name', materials.names[blockID][blockData])
-         
-             
-        self.brightness  = kw.pop('brightness', materials.defaultBrightness)
-        self.opacity = kw.pop('opacity', materials.defaultOpacity)
-        self.aka = kw.pop('aka', "")
-        
-        self.color = kw.pop('color', materials.flatColors[blockID,blockData])
-            
         self.ID = blockID
         self.blockData = blockData
-        
-    
-    def __str__(self):
-        return "<Block {name} ({id}:{data}) hasAlternate:{ha}>".format(
-            name=self.name,id=self.ID,data=self.blockData,ha=self.hasAlternate)
-    
-    def __repr__(self):
-        return str(self)  
-    hasAlternate = False
-    wildcard = False
-    
-    def anySubtype(self):
-        bl = Block( self.materials, self.ID, self.blockData )
-        bl.wildcard = True
-        return bl
+
+    def __getattr__(self, attr):
+        if attr in self.__dict__:
+            return self.__dict__[attr]
+        if attr == "name":
+            r = self.materials.names[self.ID]
+        else:
+            r = getattr(self.materials, attr)[self.ID]
+        if attr in ("name", "aka", "color", "type"):
+            r = r[self.blockData]
+        return r
+
+
 class MCMaterials(object):
+    defaultColor = (0xc9, 0x77, 0xf0, 0xff)
     defaultBrightness = 0
     defaultOpacity = 15
     defaultTexture = NOTEX
-    def __init__(self, defaultName = "Unused Block"):
+    defaultTex = [t // 16 for t in defaultTexture]
+
+    def __init__(self, defaultName="Unused Block"):
         object.__init__(self)
+        self.yamlDatas = []
+
         self.defaultName = defaultName
-        
+
         self.blockTextures = zeros((256, 16, 6, 2), dtype='uint8')
         self.blockTextures[:] = self.defaultTexture
         self.names = [[defaultName] * 16 for i in range(256)]
-        self.aka = [""] * 256
+        self.aka = [[""] * 16 for i in range(256)]
+
+        self.type = [["NORMAL"] * 16] * 256
+        self.blocksByType = defaultdict(list)
         self.allBlocks = []
         self.blocksByID = {}
-        
+
         self.lightEmission = zeros(256, dtype='uint8')
+        self.lightEmission[:] = self.defaultBrightness
         self.lightAbsorption = zeros(256, dtype='uint8')
         self.lightAbsorption[:] = self.defaultOpacity
         self.flatColors = zeros((256, 16, 4), dtype='uint8')
-        self.flatColors[:] = (0xc9, 0x77, 0xf0, 0xff)
-         
-        #flat colors borrowed from c10t.  https://github.com/udoprog/c10t
-        defaultColors = array([
-            (255, 255, 255, 0), #Air
-            (128, 128, 128, 255), #Stone
-            (120, 172, 70, 255), #Grass
-            (134, 96, 67, 255), #Dirt
-            (100, 100, 100, 255), #Cobblestone
-            (157, 128, 79, 255), #Wood Planks
-            (120, 120, 120, 0), #Sapling
-            (84, 84, 84, 255), #Bedrock
-            (56, 68, 127, 64), #Water (active)
-            (56, 68, 127, 64), #Water (still)
-            (255, 90, 0, 255), #Lava (active)
-            (255, 90, 0, 255), #Lava (still)
-            (218, 210, 158, 255), #Sand
-            (136, 126, 126, 255), #Gravel
-            (143, 140, 125, 255), #Gold Ore
-            (136, 130, 127, 255), #Iron Ore
-            (115, 115, 115, 255), #Coal Ore
-            (102, 81, 51, 255), #Wood
-            (74, 131, 66, 128), #Leaves
-            (195, 195, 50, 255), #Sponge
-            (255, 255, 255, 48), #Glass
-            (102, 112, 134, 255), #Lapis Lazuli Ore
-            (29, 71, 165, 255), #Lapis Lazuli Block
-            (107, 107, 107, 255), #Dispenser
-            (218, 210, 158, 255), #Sandstone
-            (100, 67, 50, 255), #Note Block
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (255, 255, 255, 255), #White Wool
-            (0xc9, 0x77, 0xf0, 0xff), #Future Block!
-            (127, 174, 125, 255), #Flower
-            (17, 13, 26, 255), #Rose
-            (255, 225, 96, 208), #Brown Mushroom
-            (224, 174, 21, 255), #Red Mushroom
-            (255, 255, 255, 0), #Block of Gold
-            (191, 169, 116, 255), #Block of Iron
-            (191, 135, 2, 255), #Double Stone Slab
-            (111, 1, 1, 255), #Stone Slab
-            (129, 140, 143, 255), #Brick
-            (45, 166, 152, 255), #TNT
-            (169, 107, 0, 255), #Bookshelf
-            (144, 188, 39, 255), #Moss Stone
-            (134, 96, 67, 255), #Obsidian
-            (188, 188, 188, 255), #Torch
-            (221, 221, 221, 255), #Fire
-            (0, 0, 0, 0), #Monster Spawner
-            (0, 0, 0, 0), #Wooden Stairs
-            (255, 200, 140, 0), #Chest
-            (120, 120, 120, 128), #Redstone Wire
-            (120, 120, 120, 128), #Diamond Ore
-            (0, 0, 0, 0), #Block of Diamond
-            (0, 0, 0, 0), #Crafting Table
-            (120, 120, 120, 255), #Crops
-            (0, 0, 0, 0), #Farmland
-            (0, 0, 0, 0), #Furnace
-            (143, 125, 125, 255), #Lit Furnace
-            (163, 145, 145, 255), #Sign
-            (181, 140, 64, 32), #Wooden Door
-            (255, 0, 0, 176), #Ladder
-            (0, 0, 0, 0), #Rail
-            (255, 255, 255, 255), #Stone Stairs
-            (120, 120, 255, 120), #Wall Sign
-            (255, 255, 255, 255), #Lever
-            (85, 107, 47, 255), #Stone Floor Plate
-            (144, 152, 168, 255), #Iron Door
-            (193, 234, 150, 255), #Wood Floor Plate
-            (125, 66, 44, 255), #Redstone Ore
-            (88, 54, 22, 200), #Redstone Ore (glowing)
-            (227, 144, 29, 255), #Redstone Torch (off)
-            (194, 115, 115, 255), #Redstone Torch (on)
-            (121, 97, 82, 255), #Button
-            (255, 188, 94, 255), #Snow Layer
-            (60, 13, 106, 127), #Ice
-            (60, 13, 106, 127), #Snow
-            (228, 205, 206, 255), #Cactus
-            (50, 89, 45, 128), #Clay
-            (94, 167, 84, 128), #Sugar Cane
-            (201, 119, 240, 85), #Jukebox
-            (201, 119, 240, 85), #Fence
-            (204, 119, 24, 255), #Pumpkin
-            (201, 119, 240, 85), #Netherrack
-            (201, 119, 240, 85), #Soul Sand
-            (255, 238, 0, 255), #Glowstone
-            (201, 119, 240, 85), #Nether Portal
-            (204, 119, 24, 255), #Jack-o'-Lantern
-            (201, 119, 240, 85), #Cake
-            (201, 119, 240, 85), #Redstone Repeater (Off)
-            (201, 119, 240, 85), #Redstone Repeater (On)
-        ])
-        self.flatColors[:len(defaultColors),:,:] = array(defaultColors)[:,newaxis,:]
-        
+        self.flatColors[:] = self.defaultColor
+
+        self.idStr = {}
+
+        self.color = self.flatColors
+        self.brightness = self.lightEmission
+        self.opacity = self.lightAbsorption
+
+        self.Air = self.addBlock(0,
+            name="Air",
+            texture=(0x80, 0xB0),
+            opacity=0,
+        )
+
     def __repr__(self):
         return "<MCMaterials ({0})>".format(self.name)
-        
+
+    @property
+    def AllStairs(self):
+        return [b for b in self.allBlocks if b.name.endswith("Stairs")]
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __len__(self):
+        return len(self.allBlocks)
+
+    def __iter__(self):
+        return iter(self.allBlocks)
+
+    def __getitem__(self, key):
+        """ Let's be magic. If we get a string, return the first block whose
+            name matches exactly. If we get a (id, data) pair or an id, return
+            that block. for example:
+
+                level.materials[0]  # returns Air
+                level.materials["Air"]  # also returns Air
+                level.materials["Powered Rail"]  # returns Powered Rail
+                level.materials["Lapis Lazuli Block"]  # in Classic
+
+           """
+        if isinstance(key, basestring):
+            for b in self.allBlocks:
+                if b.name == key:
+                    return b
+            raise KeyError("No blocks named: " + key)
+        if isinstance(key, (tuple, list)):
+            id, blockData = key
+            return self.blockWithID(id, blockData)
+        return self.blockWithID(key)
+
     def blocksMatching(self, name):
         name = name.lower()
         return [v for v in self.allBlocks if name in v.name.lower() or name in v.aka.lower()]
-    
-    def blockWithID(self, id, data = 0):
-        if (id,data) in self.blocksByID:
-            return self.blocksByID[id,data]
+
+    def blockWithID(self, id, data=0):
+        if (id, data) in self.blocksByID:
+            return self.blocksByID[id, data]
         else:
             bl = Block(self, id, blockData=data)
-            bl.hasAlternate = True
+            bl.hasVariants = True
             return bl
-            
-    def Block(self, blockID, blockData = 0, **kw):
-        block = Block(self, blockID, blockData, **kw)
-        
-        self.lightEmission[blockID] = block.brightness
-        self.lightAbsorption[blockID] = block.opacity
-        self.aka[blockID] = block.aka
-        
-        self.flatColors[blockID, (blockData or slice(None))] = block.color
-            
+
+    def addYamlBlocksFromFile(self, filename):
+        try:
+            import pkg_resources
+
+            f = pkg_resources.resource_stream(__name__, filename)
+        except (ImportError, IOError):
+            root = os.environ.get("PYMCLEVEL_YAML_ROOT", "pymclevel")  # fall back to cwd as last resort
+            path = join(root, filename)
+
+            log.exception("Failed to read %s using pkg_resources. Trying %s instead." % (filename, path))
+
+            f = file(path)
+        try:
+            log.info(u"Loading block info from %s", f)
+            blockyaml = yaml.load(f)
+            self.addYamlBlocks(blockyaml)
+
+        except Exception, e:
+            log.warn(u"Exception while loading block info from %s: %s", f, e)
+            traceback.print_exc()
+
+    def addYamlBlocks(self, blockyaml):
+        self.yamlDatas.append(blockyaml)
+        for block in blockyaml['blocks']:
+            try:
+                self.addYamlBlock(block)
+            except Exception, e:
+                log.warn(u"Exception while parsing block: %s", e)
+                traceback.print_exc()
+                log.warn(u"Block definition: \n%s", pformat(block))
+
+    def addYamlBlock(self, kw):
+        blockID = kw['id']
+
+        # xxx unused_yaml_properties variable unused; needed for
+        #     documentation purpose of some sort?  -zothar
+        #unused_yaml_properties = \
+        #['explored',
+        # # 'id',
+        # # 'idStr',
+        # # 'mapcolor',
+        # # 'name',
+        # # 'tex',
+        # ### 'tex_data',
+        # # 'tex_direction',
+        # ### 'tex_direction_data',
+        # 'tex_extra',
+        # # 'type'
+        # ]
+
+        for val, data in kw.get('data', {0: {}}).items():
+            datakw = dict(kw)
+            datakw.update(data)
+            idStr = datakw.get('idStr', "")
+            tex = [t * 16 for t in datakw.get('tex', self.defaultTex)]
+            texture = [tex] * 6
+            texDirs = {
+                "FORWARD": 5,
+                "BACKWARD": 4,
+                "LEFT": 1,
+                "RIGHT": 0,
+                "TOP": 2,
+                "BOTTOM": 3,
+            }
+            for dirname, dirtex in datakw.get('tex_direction', {}).items():
+                if dirname == "SIDES":
+                    for dirname in ("LEFT", "RIGHT"):
+                        texture[texDirs[dirname]] = [t * 16 for t in dirtex]
+                if dirname in texDirs:
+                    texture[texDirs[dirname]] = [t * 16 for t in dirtex]
+            datakw['texture'] = texture
+            # print datakw
+            block = self.addBlock(blockID, val, **datakw)
+            block.yaml = datakw
+            if idStr not in self.idStr:
+                self.idStr[idStr] = block
+
+        tex_direction_data = kw.get('tex_direction_data')
+        if tex_direction_data:
+            texture = datakw['texture']
+            # X+0, X-1, Y+, Y-, Z+b, Z-f
+            texDirMap = {
+                "NORTH": 0,
+                "EAST": 1,
+                "SOUTH": 2,
+                "WEST": 3,
+            }
+
+            def rot90cw():
+                rot = (5, 0, 2, 3, 4, 1)
+                texture[:] = [texture[r] for r in rot]
+
+            for data, dir in tex_direction_data.items():
+                for _i in range(texDirMap.get(dir, 0)):
+                    rot90cw()
+                self.blockTextures[blockID][data] = texture
+
+    def addBlock(self, blockID, blockData=0, **kw):
+        name = kw.pop('name', self.names[blockID][blockData])
+
+        self.lightEmission[blockID] = kw.pop('brightness', self.defaultBrightness)
+        self.lightAbsorption[blockID] = kw.pop('opacity', self.defaultOpacity)
+        self.aka[blockID][blockData] = kw.pop('aka', "")
+        type = kw.pop('type', 'NORMAL')
+
+        color = kw.pop('mapcolor', self.flatColors[blockID, blockData])
+        self.flatColors[blockID, (blockData or slice(None))] = (tuple(color) + (255,))[:4]
+
         texture = kw.pop('texture', None)
-        
+
         if texture:
-            self.blockTextures[blockID,(blockData or slice(None))] = texture
-        
+            self.blockTextures[blockID, (blockData or slice(None))] = texture
+
         if blockData is 0:
-            self.names[blockID] = [block.name] * 16
+            self.names[blockID] = [name] * 16
+            self.type[blockID] = [type] * 16
         else:
-            self.names[blockID][blockData] = block.name
-        
-        if block.name is not self.defaultName:
-            self.allBlocks.append(block)
-            
-        
+            self.names[blockID][blockData] = name
+            self.type[blockID][blockData] = type
+
+        block = Block(self, blockID, blockData)
+
+        self.allBlocks.append(block)
+        self.blocksByType[type].append(block)
+
         if (blockID, 0) in self.blocksByID:
-            self.blocksByID[blockID, 0].hasAlternate = True
-            block.hasAlternate = True
-        
+            self.blocksByID[blockID, 0].hasVariants = True
+            block.hasVariants = True
+
         self.blocksByID[blockID, blockData] = block
-        
-        return block 
-        
-    def __cmp__(self, rhs):
-        return (self.ID, self.blockData).__cmp__( (rhs.ID, rhs.blockData) )
-        
-
-###
-### MATERIALS for the latest version of the game ###
-###
-
-materials = MCMaterials(defaultName = "Future Block!");
-materials.name = "Alpha"
-am = materials
-am.Air = am.Block(0, 
-    name="Air",
-    texture=(0x80,0xB0),
-    opacity=0,
-    )
-
-am.Stone = am.Block(1, 
-    name="Stone",
-    texture=(0x10,0x00),
-    )
-
-am.Grass = am.Block(2, 
-    name="Grass",
-    texture=((0x30,0x00), (0x30,0x00), (0x00,0x00), (0x20,0x00), (0x30,0x00), (0x30,0x00)),
-    )
-
-am.Dirt = am.Block(3, 
-    name="Dirt",
-    texture=(0x20,0x00),
-    )
-
-am.Cobblestone = am.Block(4, 
-    name="Cobblestone",
-    texture=(0x00,0x10),
-    )
-
-am.WoodPlanks = am.Block(5, 
-    name="Wood Planks",
-    texture=(0x40,0x00),
-    )
-
-am.Sapling = am.Block(6, 
-    name="Sapling",
-    texture=(0xF0,0x00),
-    opacity=0,
-    )
-    
-am.SpruceSapling = am.Block(6, blockData=1,
-    name="Spruce Sapling",
-    texture=(0xF0,0x30),
-    opacity=0,
-    )
-
-am.BirchSapling = am.Block(6, blockData=2,
-    name="Birch Sapling",
-    texture=(0xF0,0x40),
-    opacity=0,
-    )
-
-
-am.Bedrock = am.Block(7, 
-    name="Bedrock",
-    aka="Adminium",
-    texture=(0x10,0x10),
-    )
-
-am.WaterActive = am.Block(8, 
-    name="Water (active)",
-    texture=(0xF0,0xD0),
-    opacity=3,
-    )
-
-am.WaterStill = am.Block(9, 
-    name="Water (still)",
-    texture=(0xF0,0xD0),
-    opacity=3,
-    )
-
-am.LavaActive = am.Block(10, 
-    name="Lava (active)",
-    texture=(0xF0,0xF0),
-    brightness=15,
-    )
-
-am.LavaStill = am.Block(11, 
-    name="Lava (still)",
-    texture=(0xF0,0xF0),
-    brightness=15,
-    )
-
-am.Sand = am.Block(12, 
-    name="Sand",
-    texture=(0x20,0x10),
-    )
-
-am.Gravel = am.Block(13, 
-    name="Gravel",
-    texture=(0x30,0x10),
-    )
-
-am.GoldOre = am.Block(14, 
-    name="Gold Ore",
-    texture=(0x00,0x20),
-    )
-
-am.IronOre = am.Block(15, 
-    name="Iron Ore",
-    texture=(0x10,0x20),
-    )
-
-am.CoalOre = am.Block(16, 
-    name="Coal Ore",
-    texture=(0x20,0x20),
-    )
-
-
-am.Wood = am.Block(17, 
-    name="Wood",
-    texture=((0x40,0x10), (0x40,0x10), (0x50,0x10), (0x50,0x10), (0x40,0x10), (0x40,0x10)),
-    )
-
-am.Ironwood = am.Block(17, blockData=1, 
-    name="Ironwood",
-    aka="Redwood",
-    texture=((0x40,0x70), (0x40,0x70), (0x50,0x10), (0x50,0x10), (0x40,0x70), (0x40,0x70)),
-    )
-    
-am.BirchWood = am.Block(17, blockData=2, 
-    name="Birch Wood",
-    texture=((0x50,0x70), (0x50,0x70), (0x50,0x10), (0x50,0x10), (0x50,0x70), (0x50,0x70)),
-    )
-
-
-am.Leaves = am.Block(18, 
-    name="Leaves",
-    texture=(0x50,0x30),
-    opacity=1,
-    color=(99, 188, 76, 128),
-    )
-
-am.PineLeaves = am.Block(18, blockData=1, 
-    name="Pine Leaves",
-    texture=(0x50,0x80),
-    opacity=1,
-    color=(74, 131, 66, 128),
-    )
-
-am.BirchLeaves = am.Block(18, blockData=2, 
-    name="Birch Leaves",
-    texture=(0x50,0x30),
-    opacity=1,
-    color=(89, 151, 76, 128),
-    )
-
-am.LeavesDecaying = am.Block(18, blockData=0 | 4, 
-    name="Leaves (Decaying)",
-    texture=(0x50,0x30),
-    opacity=1,
-    )
-
-am.PineLeavesDecaying = am.Block(18, blockData=1 | 4, 
-    name="Pine Leaves (Decaying)",
-    texture=(0x50,0x80),
-    opacity=1,
-    color=am.PineLeaves.color
-    )
-
-am.BirchLeavesDecaying = am.Block(18, blockData=2 | 4, 
-    name="Birch Leaves (Decaying)",
-    texture=(0x50,0x30),
-    opacity=1,
-    color=am.BirchLeaves.color
-    )    
-
-am.Sponge = am.Block(19, 
-    name="Sponge",
-    texture=(0x00,0x30),
-    )
-
-am.Glass = am.Block(20, 
-    name="Glass",
-    texture=(0x10,0x30),
-    opacity=0,
-    )
-
-am.LapisLazuliOre = am.Block(21, 
-    name="Lapis Lazuli Ore",
-    texture=(0x00,0xA0),
-    )
-
-am.LapisLazuliBlock = am.Block(22, 
-    name="Lapis Lazuli Block",
-    texture=(0x00,0x90),
-    )
-
-am.Dispenser = am.Block(23, 
-    name="Dispenser",
-    texture=((0xE0,0x20), (0xE0,0x20), (0xE0,0x30), (0x10,0x00), (0xD0,0x20), (0xD0,0x20)),
-    )
-
-am.Sandstone = am.Block(24, 
-    name="Sandstone",
-    texture=((0x00,0xC0), (0x00,0xC0), (0x00,0xB0), (0x00,0xD0), (0x00,0xC0), (0x00,0xC0)),
-    )
-
-am.NoteBlock = am.Block(25, 
-    name="Note Block",
-    texture=(0xA0,0x40),
-    )
-
-am.Bed = am.Block(26, 
-    name="Bed",
-    texture=(0x60, 0x80),
-    opacity=0,
-    )
-
-am.PoweredRail = am.Block(27, 
-    name="Powered Rail",
-    texture=(0x30, 0xA0),
-    opacity=0,
-    )
-am.blockTextures[am.PoweredRail.ID][8:] = (0x30, 0xB0)
-
-am.DetectorRail = am.Block(28, 
-    name="Detector Rail",
-    texture=(0x30, 0xC0),
-    opacity=0,
-    )
-
-am.StickyPiston = am.Block(29, 
-    name="Sticky Piston",
-    texture=(0xA0, 0x60),
-    opacity=15,
-    )
-
-am.Web = am.Block(30, 
-    name="Web",
-    texture=(0xB0, 0x00),
-    opacity=0,
-    )
-
-am.UnusedShrub = am.Block(31, blockData = 0,
-    name="[Unused Shrub]",
-    texture=(0x80, 0x30),
-    opacity=0,
-    )
-
-am.TallGrass = am.Block(31, blockData = 1,
-    name="Tall Grass",
-    texture=(0x70, 0x20),
-    opacity=0,
-    )
-
-am.Shrub = am.Block(31, blockData = 2,
-    name="Shrub",
-    texture=(0x80, 0x30),
-    opacity=0,
-    )
-    
-am.DesertShrub2 = am.Block(32, 
-    name="Dead Shrub",
-    texture=(0x70, 0x30),
-    opacity=0,
-    )
-
-am.Piston = am.Block(33, 
-    name="Piston",
-    texture=(0xB0, 0x60),
-    opacity=15,
-    )
-
-am.PistonHead = am.Block(34, 
-    name="Piston Head",
-    texture=NOTEX,
-    opacity=15,
-    )
-    
-am.WhiteWool = am.Block(35, 
-    name="White Wool",
-    texture=(0x00, 0x40),
-    color=(0xff, 0xff, 0xff, 0xff)
-    )
-
-am.OrangeWool = am.Block(35, blockData = 1,
-    name="Orange Wool",
-    texture=(0x20, 0xD0),
-    color=(0xea, 0x7f, 0x37, 0xff)
-    )
-
-am.MagentaWool = am.Block(35,  blockData = 2,
-    name="Magenta Wool",
-    texture=(0x20, 0xC0),
-    color=(0xbf, 0x4b, 0xc9, 0xff)
-    )
-      
-am.LightBlueWool = am.Block(35,  blockData = 3,
-    name="Light Blue Wool",
-    texture=(0x20, 0xB0),
-    color=(0x68, 0x8b, 0xd4, 0xff)
-    )
-
-am.YellowWool = am.Block(35,  blockData = 4,
-    name="Yellow Wool",
-    texture=(0x20, 0xA0),
-    color=(0xc2, 0xb5, 0x1c, 0xff)
-    )
-
-am.LightGreenWool = am.Block(35,  blockData = 5,
-    name="Light Green Wool",
-    texture=(0x20, 0x90),
-    color=(0x3b, 0xbd, 0x30, 0xff)
-    )
-
-am.PinkWool = am.Block(35,  blockData = 6,
-    name="Pink Wool",
-    texture=(0x20, 0x80),
-    color=(0xd9, 0x83, 0x9b, 0xff)
-    )
-
-am.GrayWool = am.Block(35,  blockData = 7,
-    name="Gray Wool",
-    texture=(0x20, 0x70),
-    color=(0x42, 0x42, 0x42, 0xff)
-    )
-
-am.LightGrayWool = am.Block(35,  blockData = 8,
-    name="Light Gray Wool",
-    texture=(0x10, 0xE0),
-    color=(0x9e, 0xa6, 0xa6, 0xff)
-    )
-
-am.CyanWool = am.Block(35,  blockData = 9,
-    name="Cyan Wool",
-    texture=(0x10, 0xD0),
-    color=(0x27, 0x75, 0x95, 0xff)
-    )
-
-am.PurpleWool = am.Block(35,  blockData = 10,
-    name="Purple Wool",
-    texture=(0x10, 0xC0),
-    color=(0x81, 0x36, 0xc4, 0xff)
-    )
-
-am.BlueWool = am.Block(35,  blockData = 11,
-    name="Blue Wool",
-    texture=(0x10, 0xB0),
-    color=(0x27, 0x33, 0xa1, 0xff)
-    )
-
-am.BrownWool = am.Block(35,  blockData = 12,
-    name="Brown Wool",
-    texture=(0x10, 0xA0),
-    color=(0x56, 0x33, 0x1c, 0xff)
-    )
-
-am.DarkGreenWool = am.Block(35,  blockData = 13,
-    name="Dark Green Wool",
-    texture=(0x10, 0x90),
-    color=(0x38, 0x4d, 0x18, 0xff)
-    )
-
-am.RedWool = am.Block(35,  blockData = 14,
-    name="Red Wool",
-    texture=(0x10, 0x80),
-    color=(0xa4, 0x2d, 0x29, 0xff)
-    )
-
-am.BlackWool = am.Block(35,  blockData = 15,
-    name="Black Wool",
-    texture=(0x10, 0x70),
-    color = (0, 0, 0, 0xff)
-    )
-
-
-am.Flower = am.Block(37, 
-    name="Flower",
-    texture=(0xD0,0x00),
-    opacity=0,
-    )
-
-am.Rose = am.Block(38, 
-    name="Rose",
-    texture=(0xC0,0x00),
-    opacity=0,
-    )
-
-am.BrownMushroom = am.Block(39, 
-    name="Brown Mushroom",
-    texture=(0xD0,0x10),
-    opacity=0,
-    brightness=1,
-    )
-
-am.RedMushroom = am.Block(40, 
-    name="Red Mushroom",
-    texture=(0xC0,0x10),
-    opacity=0,
-    )
-
-am.BlockofGold = am.Block(41, 
-    name="Block of Gold",
-    texture=(0x70,0x10),
-    )
-
-am.BlockofIron = am.Block(42, 
-    name="Block of Iron",
-    texture=(0x60,0x10),
-    )
-
-am.DoubleStoneSlab = am.Block(43, 
-    name="Double Stone Slab",
-    texture=((0x50,0x00), (0x50,0x00), (0x60,0x00), (0x60,0x00), (0x50,0x00), (0x50,0x00)),
-    )
-
-am.DoubleSandstoneSlab = am.Block(43, blockData=1,
-    name="Double Sandstone Slab",
-    texture=((0x00,0xC0), (0x00,0xC0), (0x00,0xB0), (0x00,0xD0), (0x00,0xC0), (0x00,0xC0)),
-    color=am.Sandstone.color,
-    )
-
-am.DoubleWoodenSlab = am.Block(43, blockData=2,
-    name="Double Wooden Slab",
-    texture=(0x40,0x00),
-    color=am.WoodPlanks.color
-    )
-    
-am.DoubleCobblestoneSlab = am.Block(43, blockData=3,
-    name="Double Cobblestone Slab",
-    texture=(0x00,0x10),
-    )    
-
-am.StoneSlab = am.Block(44, 
-    name="Stone Slab",
-    texture=((0x50,0x00), (0x50,0x00), (0x60,0x00), (0x60,0x00), (0x50,0x00), (0x50,0x00)),
-    )
-
-am.SandstoneSlab = am.Block(44, blockData=1,
-    name="Sandstone Slab",
-    texture=((0x00,0xC0), (0x00,0xC0), (0x00,0xB0), (0x00,0xD0), (0x00,0xC0), (0x00,0xC0)),
-    color=am.Sandstone.color,
-    )
-
-am.WoodenSlab = am.Block(44, blockData=2,
-    name="Wooden Slab",
-    texture=(0x40,0x00),
-    color=am.WoodPlanks.color
-    )
-    
-am.CobblestoneSlab = am.Block(44, blockData=3,
-    name="Cobblestone Slab",
-    texture=(0x00,0x10),
-    )    
-    
-    
-am.Brick = am.Block(45, 
-    name="Brick",
-    texture=(0x70,0x00),
-    )
-
-am.TNT = am.Block(46, 
-    name="TNT",
-    texture=((0x80,0x00), (0x80,0x00), (0x90,0x00), (0xA0,0x00), (0x80,0x00), (0x80,0x00)),
-    )
-
-am.Bookshelf = am.Block(47, 
-    name="Bookshelf",
-    texture=((0x30,0x20), (0x30,0x20), (0x40,0x00), (0x40,0x00), (0x30,0x20), (0x30,0x20)),
-    )
-
-am.MossStone = am.Block(48, 
-    name="Moss Stone",
-    aka="Mossy Cobblestone",
-    texture=(0x40,0x20),
-    )
-
-am.Obsidian = am.Block(49, 
-    name="Obsidian",
-    texture=(0x50,0x20),
-    )
-
-am.Torch = am.Block(50, 
-    name="Torch",
-    texture=(0x00,0x50),
-    brightness=14,
-    opacity=0,
-    )
-
-am.Fire = am.Block(51, 
-    name="Fire",
-    texture=(0xF0,0x10),
-    brightness=15,
-    )
-
-am.MonsterSpawner = am.Block(52, 
-    name="Monster Spawner",
-    aka="Mob Cage",
-    texture=(0x10,0x40),
-    opacity=0,
-    )
-
-am.WoodenStairs = am.Block(53, 
-    name="Wooden Stairs",
-    texture=(0x40,0x00),
-    opacity=0,
-    )
-
-am.Chest = am.Block(54, 
-    name="Chest",
-    texture=((0xA0,0x10), (0xA0,0x10), (0xA0,0x10), (0xB0,0x10), (0x90,0x10), (0x90,0x10)),
-    )
-
-am.RedstoneWire = am.Block(55, 
-    name="Redstone Wire",
-    texture=(0x40,0xA0), #note: as of 1.5 the texture is unsaturated like leaves
-    opacity=0,
-    )
-
-am.DiamondOre = am.Block(56, 
-    name="Diamond Ore",
-    texture=(0x20,0x30),
-    )
-
-am.BlockofDiamond = am.Block(57, 
-    name="Block of Diamond",
-    texture=(0x80,0x10),
-    )
-
-am.CraftingTable = am.Block(58, 
-    name="Crafting Table",
-    aka="Workbench",
-    texture=((0xB0,0x30), (0xB0,0x30), (0xB0,0x20), (0x40,0x10), (0xC0,0x30), (0xC0,0x30)),
-    )
-
-am.Crops = am.Block(59, 
-    name="Crops",
-    aka="Wheat",
-    texture=(0xF0,0x50),
-    opacity=0,
-    )
-
-am.Farmland = am.Block(60, 
-    name="Farmland",
-    aka="Soil",
-    texture=(0x60,0x50),
-    )
-
-am.Furnace = am.Block(61, 
-    name="Furnace",
-    texture=((0xD0,0x20), (0xD0,0x20), (0x10,0x00), (0x10,0x00), (0xC0,0x20), (0xC0,0x20)),
-    )
-
-am.LitFurnace = am.Block(62, 
-    name="Lit Furnace",
-    texture=((0xD0,0x20), (0xD0,0x20), (0x10,0x00), (0x10,0x00), (0xD0,0x30), (0xD0,0x30)),
-    brightness=14,
-    )
-
-am.Sign = am.Block(63, 
-    name="Sign",
-    texture=(0x80,0xB0),
-    opacity=0,
-    )
-
-am.WoodenDoor = am.Block(64, 
-    name="Wooden Door",
-    texture=(0x10,0x50),
-    opacity=0,
-    )
-
-am.Ladder = am.Block(65, 
-    name="Ladder",
-    texture=(0x30,0x50),
-    opacity=0,
-    )
-
-am.Rail = am.Block(66, 
-    name="Rail",
-    aka="Minecart Track",
-    texture=(0x00,0x80),
-    opacity=0,
-    )
-
-am.StoneStairs = am.Block(67, 
-    name="Stone Stairs",
-    texture=(0x00,0x10),
-    opacity=0,
-    )
-
-am.WallSign = am.Block(68, 
-    name="Wall Sign",
-    texture=(0x80,0xB0),
-    opacity=0,
-    )
-
-am.Lever = am.Block(69, 
-    name="Lever",
-    aka="Switch",
-    texture=(0x80,0xB0),
-    opacity=0,
-    )
-
-am.StoneFloorPlate = am.Block(70, 
-    name="Stone Floor Plate",
-    texture=(0x80,0xB0),
-    opacity=0,
-    )
-
-am.IronDoor = am.Block(71, 
-    name="Iron Door",
-    texture=(0x20,0x50),
-    opacity=0,
-    )
-
-am.WoodFloorPlate = am.Block(72, 
-    name="Wood Floor Plate",
-    texture=(0x80,0xB0),
-    opacity=0,
-    )
-
-am.RedstoneOre = am.Block(73, 
-    name="Redstone Ore",
-    texture=(0x30,0x30),
-    )
-
-am.RedstoneOreGlowing = am.Block(74, 
-    name="Redstone Ore (glowing)",
-    texture=(0x30,0x30),
-    brightness=9,
-    )
-
-am.RedstoneTorchOff = am.Block(75, 
-    name="Redstone Torch (off)",
-    texture=(0x30,0x70),
-    opacity=0,
-    )
-
-am.RedstoneTorchOn = am.Block(76, 
-    name="Redstone Torch (on)",
-    texture=(0x30,0x60),
-    opacity=0,
-    brightness=7,
-    )
-
-am.Button = am.Block(77, 
-    name="Button",
-    texture=(0x80,0xB0),
-    opacity=0,
-    )
-
-am.SnowLayer = am.Block(78, 
-    name="Snow Layer",
-    texture=(0x20,0x40),
-    opacity=0,
-    )
-
-am.Ice = am.Block(79, 
-    name="Ice",
-    texture=(0x30,0x40),
-    opacity=3,
-    )
-
-am.Snow = am.Block(80, 
-    name="Snow",
-    texture=(0x20,0x40),
-    )
-
-am.Cactus = am.Block(81, 
-    name="Cactus",
-    texture=((0x60,0x40), (0x60,0x40), (0x70,0x40), (0x50,0x40), (0x60,0x40), (0x60,0x40)),
-    )
-
-am.Clay = am.Block(82, 
-    name="Clay",
-    texture=(0x80,0x40),
-    )
-
-am.SugarCane = am.Block(83, 
-    name="Sugar Cane",
-    aka="Reeds, Papyrus",
-    texture=(0x90,0x40),
-    opacity=0,
-    )
-
-am.Jukebox = am.Block(84, 
-    name="Jukebox",
-    texture=((0xA0,0x40), (0xA0,0x40), (0xA0,0x40), (0xB0,0x40), (0xA0,0x40), (0xA0,0x40)),
-    )
-
-am.Fence = am.Block(85, 
-    name="Fence",
-    texture=(0x80,0xB0),
-    opacity=0,
-    )
-
-am.Pumpkin = am.Block(86, 
-    name="Pumpkin",
-    texture=((0x70,0x70), (0x60,0x70), (0x60,0x60), (0x60,0x70), (0x60,0x70), (0x60,0x70)),
-    color=(0xcc, 0x77, 0x18, 0xFF)
-    )
-
-am.Netherrack = am.Block(87, 
-    name="Netherrack",
-    aka="Bloodstone",
-    texture=(0x70,0x60),
-    )
-
-am.SoulSand = am.Block(88, 
-    name="Soul Sand",
-    aka="Slow Sand",
-    texture=(0x80,0x60),
-    )
-
-am.Glowstone = am.Block(89, 
-    name="Glowstone",
-    texture=(0x90,0x60),
-    brightness=15,
-    color=(0xFF, 0xEE, 0x00, 0xFF)
-    )
-
-am.NetherPortal = am.Block(90, 
-    name="Nether Portal",
-    texture=(0x80,0xB0),
-    opacity=0,
-    brightness=11,
-    )
-
-am.JackOLantern = am.Block(91, 
-    name="Jack-o'-Lantern",
-    texture=((0x80,0x70), (0x60,0x70), (0x60,0x60), (0x60,0x70), (0x60,0x70), (0x60,0x70)),
-    brightness=15,
-    color=(0xcc, 0x77, 0x18, 0xFF)
-    )
-
-am.Cake = am.Block(92, 
-    name="Cake",
-    texture=((0xA0,0x70), (0xA0,0x70), (0x90,0x70), (0xC0,0x70), (0xA0,0x70), (0xA0,0x70)),
-    opacity=0,
-    )
-
-am.RedstoneRepeaterOff = am.Block(93, 
-    name="Redstone Repeater (Off)",
-    texture=(0x30, 0x80),
-    opacity=0,
-    )
-
-am.RedstoneRepeaterOn = am.Block(94, 
-    name="Redstone Repeater (On)",
-    texture=(0x30, 0x90),
-    opacity=0,
-    )
-
-am.AprilFoolsChest = am.Block(95, 
-    name="April Fools Chest",
-    texture=((0xA0,0x10), (0xA0,0x10), (0xA0,0x10), (0xB0,0x10), (0x90,0x10), (0x90,0x10)),
-    )
-    
-am.Trapdoor = am.Block(96, 
-    name="Trapdoor",
-    texture=(0x10,0x50),
-    opacity=0,
-    )
-    
-del am
-
-from classicmaterials import classicMaterials
-
-classicMaterials.lightAbsorption = materials.lightAbsorption
-
-classicMaterials.lightEmission = materials.lightEmission
-
-
-namedMaterials = dict( (i.name, i) for i in (materials, classicMaterials) )
-
-
-materialNames = dict( (k,v) for v,k in namedMaterials.iteritems() )
-
-
-#filters certain block types in old maps to types available in /game/
-blockFilterClassicToAlpha = arange(256, dtype=uint8)
-
-b = blockFilterClassicToAlpha
-b[8]=9; #water to still water
-b[10]=11; #lava to still lava
-b[36]=35; # the new white cloth
-b[52]=9; # infinite water source - now mob spawner
-b[53]=11; # infinite lava source - now wooden stair
-b[55]=35; # cog - 55 is now red wire
-del b;
-
-for i in range(21, 35): blockFilterClassicToAlpha[i] = 35; # recolor all cloth to white
-
-blockFilterAlphaToClassic = arange(256, dtype=uint8)
-blockFilterAlphaToClassic[50:255] = 36 # change all blocks from torch (50) on up to grey cloth
-
-
-### xxx add filter tables for indev blocks
-
-nullConversionTable = arange(256, dtype=uint8) 
-
-
-materials.conversionTables = {
-        materials:  nullConversionTable,
-        classicMaterials: blockFilterAlphaToClassic,
-    }
-
-classicMaterials.conversionTables = {
-        materials: blockFilterClassicToAlpha,
-        classicMaterials: nullConversionTable,
-        
-    };
-
-
-alphaMaterials = materials;
+
+        return block
+
+alphaMaterials = MCMaterials(defaultName="Future Block!")
+alphaMaterials.name = "Alpha"
+alphaMaterials.addYamlBlocksFromFile("minecraft.yaml")
+
+# --- Special treatment for some blocks ---
+
+HugeMushroomTypes = {
+   "Northwest": 1,
+   "North": 2,
+   "Northeast": 3,
+   "East": 6,
+   "Southeast": 9,
+   "South": 8,
+   "Southwest": 7,
+   "West": 4,
+   "Stem": 10,
+   "Top": 5,
+}
+from faces import FaceXDecreasing, FaceXIncreasing, FaceYIncreasing, FaceZDecreasing, FaceZIncreasing
+
+Red = (0xD0, 0x70)
+Brown = (0xE0, 0x70)
+Pore = (0xE0, 0x80)
+Stem = (0xD0, 0x80)
+
+
+def defineShroomFaces(Shroom, id, name):
+    for way, data in sorted(HugeMushroomTypes.items(), key=lambda a: a[1]):
+        loway = way.lower()
+        if way is "Stem":
+            tex = [Stem, Stem, Pore, Pore, Stem, Stem]
+        elif way is "Pore":
+            tex = Pore
+        else:
+            tex = [Pore] * 6
+            tex[FaceYIncreasing] = Shroom
+            if "north" in loway:
+                tex[FaceZDecreasing] = Shroom
+            if "south" in loway:
+                tex[FaceZIncreasing] = Shroom
+            if "west" in loway:
+                tex[FaceXDecreasing] = Shroom
+            if "east" in loway:
+                tex[FaceXIncreasing] = Shroom
+
+        alphaMaterials.addBlock(id, blockData=data,
+            name="Huge " + name + " Mushroom (" + way + ")",
+            texture=tex,
+            )
+
+defineShroomFaces(Brown, 99, "Brown")
+defineShroomFaces(Red, 100, "Red")
+
+classicMaterials = MCMaterials(defaultName="Not present in Classic")
+classicMaterials.name = "Classic"
+classicMaterials.addYamlBlocksFromFile("classic.yaml")
+
+indevMaterials = MCMaterials(defaultName="Not present in Indev")
+indevMaterials.name = "Indev"
+indevMaterials.addYamlBlocksFromFile("indev.yaml")
+
+pocketMaterials = MCMaterials()
+pocketMaterials.name = "Pocket"
+pocketMaterials.addYamlBlocksFromFile("pocket.yaml")
+
+# --- Static block defs ---
+
+alphaMaterials.Stone = alphaMaterials[1, 0]
+alphaMaterials.Grass = alphaMaterials[2, 0]
+alphaMaterials.Dirt = alphaMaterials[3, 0]
+alphaMaterials.Cobblestone = alphaMaterials[4, 0]
+alphaMaterials.WoodPlanks = alphaMaterials[5, 0]
+alphaMaterials.Sapling = alphaMaterials[6, 0]
+alphaMaterials.SpruceSapling = alphaMaterials[6, 1]
+alphaMaterials.BirchSapling = alphaMaterials[6, 2]
+alphaMaterials.Bedrock = alphaMaterials[7, 0]
+alphaMaterials.WaterActive = alphaMaterials[8, 0]
+alphaMaterials.Water = alphaMaterials[9, 0]
+alphaMaterials.LavaActive = alphaMaterials[10, 0]
+alphaMaterials.Lava = alphaMaterials[11, 0]
+alphaMaterials.Sand = alphaMaterials[12, 0]
+alphaMaterials.Gravel = alphaMaterials[13, 0]
+alphaMaterials.GoldOre = alphaMaterials[14, 0]
+alphaMaterials.IronOre = alphaMaterials[15, 0]
+alphaMaterials.CoalOre = alphaMaterials[16, 0]
+alphaMaterials.Wood = alphaMaterials[17, 0]
+alphaMaterials.Ironwood = alphaMaterials[17, 1]
+alphaMaterials.BirchWood = alphaMaterials[17, 2]
+alphaMaterials.Leaves = alphaMaterials[18, 0]
+alphaMaterials.PineLeaves = alphaMaterials[18, 1]
+alphaMaterials.BirchLeaves = alphaMaterials[18, 2]
+alphaMaterials.JungleLeaves = alphaMaterials[18, 3]
+alphaMaterials.LeavesPermanent = alphaMaterials[18, 4]
+alphaMaterials.PineLeavesPermanent = alphaMaterials[18, 5]
+alphaMaterials.BirchLeavesPermanent = alphaMaterials[18, 6]
+alphaMaterials.JungleLeavesPermanent = alphaMaterials[18, 7]
+alphaMaterials.LeavesDecaying = alphaMaterials[18, 8]
+alphaMaterials.PineLeavesDecaying = alphaMaterials[18, 9]
+alphaMaterials.BirchLeavesDecaying = alphaMaterials[18, 10]
+alphaMaterials.JungleLeavesDecaying = alphaMaterials[18, 11]
+alphaMaterials.Sponge = alphaMaterials[19, 0]
+alphaMaterials.Glass = alphaMaterials[20, 0]
+
+alphaMaterials.LapisLazuliOre = alphaMaterials[21, 0]
+alphaMaterials.LapisLazuliBlock = alphaMaterials[22, 0]
+alphaMaterials.Dispenser = alphaMaterials[23, 0]
+alphaMaterials.Sandstone = alphaMaterials[24, 0]
+alphaMaterials.NoteBlock = alphaMaterials[25, 0]
+alphaMaterials.Bed = alphaMaterials[26, 0]
+alphaMaterials.PoweredRail = alphaMaterials[27, 0]
+alphaMaterials.DetectorRail = alphaMaterials[28, 0]
+alphaMaterials.StickyPiston = alphaMaterials[29, 0]
+alphaMaterials.Web = alphaMaterials[30, 0]
+alphaMaterials.UnusedShrub = alphaMaterials[31, 0]
+alphaMaterials.TallGrass = alphaMaterials[31, 1]
+alphaMaterials.Shrub = alphaMaterials[31, 2]
+alphaMaterials.DesertShrub2 = alphaMaterials[32, 0]
+alphaMaterials.Piston = alphaMaterials[33, 0]
+alphaMaterials.PistonHead = alphaMaterials[34, 0]
+alphaMaterials.WhiteWool = alphaMaterials[35, 0]
+alphaMaterials.OrangeWool = alphaMaterials[35, 1]
+alphaMaterials.MagentaWool = alphaMaterials[35, 2]
+alphaMaterials.LightBlueWool = alphaMaterials[35, 3]
+alphaMaterials.YellowWool = alphaMaterials[35, 4]
+alphaMaterials.LightGreenWool = alphaMaterials[35, 5]
+alphaMaterials.PinkWool = alphaMaterials[35, 6]
+alphaMaterials.GrayWool = alphaMaterials[35, 7]
+alphaMaterials.LightGrayWool = alphaMaterials[35, 8]
+alphaMaterials.CyanWool = alphaMaterials[35, 9]
+alphaMaterials.PurpleWool = alphaMaterials[35, 10]
+alphaMaterials.BlueWool = alphaMaterials[35, 11]
+alphaMaterials.BrownWool = alphaMaterials[35, 12]
+alphaMaterials.DarkGreenWool = alphaMaterials[35, 13]
+alphaMaterials.RedWool = alphaMaterials[35, 14]
+alphaMaterials.BlackWool = alphaMaterials[35, 15]
+
+alphaMaterials.Flower = alphaMaterials[37, 0]
+alphaMaterials.Rose = alphaMaterials[38, 0]
+alphaMaterials.BrownMushroom = alphaMaterials[39, 0]
+alphaMaterials.RedMushroom = alphaMaterials[40, 0]
+alphaMaterials.BlockofGold = alphaMaterials[41, 0]
+alphaMaterials.BlockofIron = alphaMaterials[42, 0]
+alphaMaterials.DoubleStoneSlab = alphaMaterials[43, 0]
+alphaMaterials.DoubleSandstoneSlab = alphaMaterials[43, 1]
+alphaMaterials.DoubleWoodenSlab = alphaMaterials[43, 2]
+alphaMaterials.DoubleCobblestoneSlab = alphaMaterials[43, 3]
+alphaMaterials.DoubleBrickSlab = alphaMaterials[43, 4]
+alphaMaterials.DoubleStoneBrickSlab = alphaMaterials[43, 5]
+alphaMaterials.StoneSlab = alphaMaterials[44, 0]
+alphaMaterials.SandstoneSlab = alphaMaterials[44, 1]
+alphaMaterials.WoodenSlab = alphaMaterials[44, 2]
+alphaMaterials.CobblestoneSlab = alphaMaterials[44, 3]
+alphaMaterials.BrickSlab = alphaMaterials[44, 4]
+alphaMaterials.StoneBrickSlab = alphaMaterials[44, 5]
+alphaMaterials.Brick = alphaMaterials[45, 0]
+alphaMaterials.TNT = alphaMaterials[46, 0]
+alphaMaterials.Bookshelf = alphaMaterials[47, 0]
+alphaMaterials.MossStone = alphaMaterials[48, 0]
+alphaMaterials.Obsidian = alphaMaterials[49, 0]
+
+alphaMaterials.Torch = alphaMaterials[50, 0]
+alphaMaterials.Fire = alphaMaterials[51, 0]
+alphaMaterials.MonsterSpawner = alphaMaterials[52, 0]
+alphaMaterials.WoodenStairs = alphaMaterials[53, 0]
+alphaMaterials.Chest = alphaMaterials[54, 0]
+alphaMaterials.RedstoneWire = alphaMaterials[55, 0]
+alphaMaterials.DiamondOre = alphaMaterials[56, 0]
+alphaMaterials.BlockofDiamond = alphaMaterials[57, 0]
+alphaMaterials.CraftingTable = alphaMaterials[58, 0]
+alphaMaterials.Crops = alphaMaterials[59, 0]
+alphaMaterials.Farmland = alphaMaterials[60, 0]
+alphaMaterials.Furnace = alphaMaterials[61, 0]
+alphaMaterials.LitFurnace = alphaMaterials[62, 0]
+alphaMaterials.Sign = alphaMaterials[63, 0]
+alphaMaterials.WoodenDoor = alphaMaterials[64, 0]
+alphaMaterials.Ladder = alphaMaterials[65, 0]
+alphaMaterials.Rail = alphaMaterials[66, 0]
+alphaMaterials.StoneStairs = alphaMaterials[67, 0]
+alphaMaterials.WallSign = alphaMaterials[68, 0]
+alphaMaterials.Lever = alphaMaterials[69, 0]
+alphaMaterials.StoneFloorPlate = alphaMaterials[70, 0]
+alphaMaterials.IronDoor = alphaMaterials[71, 0]
+alphaMaterials.WoodFloorPlate = alphaMaterials[72, 0]
+alphaMaterials.RedstoneOre = alphaMaterials[73, 0]
+alphaMaterials.RedstoneOreGlowing = alphaMaterials[74, 0]
+alphaMaterials.RedstoneTorchOff = alphaMaterials[75, 0]
+alphaMaterials.RedstoneTorchOn = alphaMaterials[76, 0]
+alphaMaterials.Button = alphaMaterials[77, 0]
+alphaMaterials.SnowLayer = alphaMaterials[78, 0]
+alphaMaterials.Ice = alphaMaterials[79, 0]
+alphaMaterials.Snow = alphaMaterials[80, 0]
+
+alphaMaterials.Cactus = alphaMaterials[81, 0]
+alphaMaterials.Clay = alphaMaterials[82, 0]
+alphaMaterials.SugarCane = alphaMaterials[83, 0]
+alphaMaterials.Jukebox = alphaMaterials[84, 0]
+alphaMaterials.Fence = alphaMaterials[85, 0]
+alphaMaterials.Pumpkin = alphaMaterials[86, 0]
+alphaMaterials.Netherrack = alphaMaterials[87, 0]
+alphaMaterials.SoulSand = alphaMaterials[88, 0]
+alphaMaterials.Glowstone = alphaMaterials[89, 0]
+alphaMaterials.NetherPortal = alphaMaterials[90, 0]
+alphaMaterials.JackOLantern = alphaMaterials[91, 0]
+alphaMaterials.Cake = alphaMaterials[92, 0]
+alphaMaterials.RedstoneRepeaterOff = alphaMaterials[93, 0]
+alphaMaterials.RedstoneRepeaterOn = alphaMaterials[94, 0]
+alphaMaterials.AprilFoolsChest = alphaMaterials[95, 0]
+alphaMaterials.Trapdoor = alphaMaterials[96, 0]
+
+alphaMaterials.HiddenSilverfishStone = alphaMaterials[97, 0]
+alphaMaterials.HiddenSilverfishCobblestone = alphaMaterials[97, 1]
+alphaMaterials.HiddenSilverfishStoneBrick = alphaMaterials[97, 2]
+alphaMaterials.StoneBricks = alphaMaterials[98, 0]
+alphaMaterials.MossyStoneBricks = alphaMaterials[98, 1]
+alphaMaterials.CrackedStoneBricks = alphaMaterials[98, 2]
+alphaMaterials.HugeBrownMushroom = alphaMaterials[99, 0]
+alphaMaterials.HugeRedMushroom = alphaMaterials[100, 0]
+alphaMaterials.IronBars = alphaMaterials[101, 0]
+alphaMaterials.GlassPane = alphaMaterials[102, 0]
+alphaMaterials.Watermelon = alphaMaterials[103, 0]
+alphaMaterials.PumpkinStem = alphaMaterials[104, 0]
+alphaMaterials.MelonStem = alphaMaterials[105, 0]
+alphaMaterials.Vines = alphaMaterials[106, 0]
+alphaMaterials.FenceGate = alphaMaterials[107, 0]
+alphaMaterials.BrickStairs = alphaMaterials[108, 0]
+alphaMaterials.StoneBrickStairs = alphaMaterials[109, 0]
+alphaMaterials.Mycelium = alphaMaterials[110, 0]
+alphaMaterials.Lilypad = alphaMaterials[111, 0]
+alphaMaterials.NetherBrick = alphaMaterials[112, 0]
+alphaMaterials.NetherBrickFence = alphaMaterials[113, 0]
+alphaMaterials.NetherBrickStairs = alphaMaterials[114, 0]
+alphaMaterials.NetherWart = alphaMaterials[115, 0]
+
+# --- Classic static block defs ---
+classicMaterials.Stone = classicMaterials[1]
+classicMaterials.Grass = classicMaterials[2]
+classicMaterials.Dirt = classicMaterials[3]
+classicMaterials.Cobblestone = classicMaterials[4]
+classicMaterials.WoodPlanks = classicMaterials[5]
+classicMaterials.Sapling = classicMaterials[6]
+classicMaterials.Bedrock = classicMaterials[7]
+classicMaterials.WaterActive = classicMaterials[8]
+classicMaterials.Water = classicMaterials[9]
+classicMaterials.LavaActive = classicMaterials[10]
+classicMaterials.Lava = classicMaterials[11]
+classicMaterials.Sand = classicMaterials[12]
+classicMaterials.Gravel = classicMaterials[13]
+classicMaterials.GoldOre = classicMaterials[14]
+classicMaterials.IronOre = classicMaterials[15]
+classicMaterials.CoalOre = classicMaterials[16]
+classicMaterials.Wood = classicMaterials[17]
+classicMaterials.Leaves = classicMaterials[18]
+classicMaterials.Sponge = classicMaterials[19]
+classicMaterials.Glass = classicMaterials[20]
+
+classicMaterials.RedWool = classicMaterials[21]
+classicMaterials.OrangeWool = classicMaterials[22]
+classicMaterials.YellowWool = classicMaterials[23]
+classicMaterials.LimeWool = classicMaterials[24]
+classicMaterials.GreenWool = classicMaterials[25]
+classicMaterials.AquaWool = classicMaterials[26]
+classicMaterials.CyanWool = classicMaterials[27]
+classicMaterials.BlueWool = classicMaterials[28]
+classicMaterials.PurpleWool = classicMaterials[29]
+classicMaterials.IndigoWool = classicMaterials[30]
+classicMaterials.VioletWool = classicMaterials[31]
+classicMaterials.MagentaWool = classicMaterials[32]
+classicMaterials.PinkWool = classicMaterials[33]
+classicMaterials.BlackWool = classicMaterials[34]
+classicMaterials.GrayWool = classicMaterials[35]
+classicMaterials.WhiteWool = classicMaterials[36]
+
+classicMaterials.Flower = classicMaterials[37]
+classicMaterials.Rose = classicMaterials[38]
+classicMaterials.BrownMushroom = classicMaterials[39]
+classicMaterials.RedMushroom = classicMaterials[40]
+classicMaterials.BlockofGold = classicMaterials[41]
+classicMaterials.BlockofIron = classicMaterials[42]
+classicMaterials.DoubleStoneSlab = classicMaterials[43]
+classicMaterials.StoneSlab = classicMaterials[44]
+classicMaterials.Brick = classicMaterials[45]
+classicMaterials.TNT = classicMaterials[46]
+classicMaterials.Bookshelf = classicMaterials[47]
+classicMaterials.MossStone = classicMaterials[48]
+classicMaterials.Obsidian = classicMaterials[49]
+
+# --- Indev static block defs ---
+indevMaterials.Stone = indevMaterials[1]
+indevMaterials.Grass = indevMaterials[2]
+indevMaterials.Dirt = indevMaterials[3]
+indevMaterials.Cobblestone = indevMaterials[4]
+indevMaterials.WoodPlanks = indevMaterials[5]
+indevMaterials.Sapling = indevMaterials[6]
+indevMaterials.Bedrock = indevMaterials[7]
+indevMaterials.WaterActive = indevMaterials[8]
+indevMaterials.Water = indevMaterials[9]
+indevMaterials.LavaActive = indevMaterials[10]
+indevMaterials.Lava = indevMaterials[11]
+indevMaterials.Sand = indevMaterials[12]
+indevMaterials.Gravel = indevMaterials[13]
+indevMaterials.GoldOre = indevMaterials[14]
+indevMaterials.IronOre = indevMaterials[15]
+indevMaterials.CoalOre = indevMaterials[16]
+indevMaterials.Wood = indevMaterials[17]
+indevMaterials.Leaves = indevMaterials[18]
+indevMaterials.Sponge = indevMaterials[19]
+indevMaterials.Glass = indevMaterials[20]
+
+indevMaterials.RedWool = indevMaterials[21]
+indevMaterials.OrangeWool = indevMaterials[22]
+indevMaterials.YellowWool = indevMaterials[23]
+indevMaterials.LimeWool = indevMaterials[24]
+indevMaterials.GreenWool = indevMaterials[25]
+indevMaterials.AquaWool = indevMaterials[26]
+indevMaterials.CyanWool = indevMaterials[27]
+indevMaterials.BlueWool = indevMaterials[28]
+indevMaterials.PurpleWool = indevMaterials[29]
+indevMaterials.IndigoWool = indevMaterials[30]
+indevMaterials.VioletWool = indevMaterials[31]
+indevMaterials.MagentaWool = indevMaterials[32]
+indevMaterials.PinkWool = indevMaterials[33]
+indevMaterials.BlackWool = indevMaterials[34]
+indevMaterials.GrayWool = indevMaterials[35]
+indevMaterials.WhiteWool = indevMaterials[36]
+
+indevMaterials.Flower = indevMaterials[37]
+indevMaterials.Rose = indevMaterials[38]
+indevMaterials.BrownMushroom = indevMaterials[39]
+indevMaterials.RedMushroom = indevMaterials[40]
+indevMaterials.BlockofGold = indevMaterials[41]
+indevMaterials.BlockofIron = indevMaterials[42]
+indevMaterials.DoubleStoneSlab = indevMaterials[43]
+indevMaterials.StoneSlab = indevMaterials[44]
+indevMaterials.Brick = indevMaterials[45]
+indevMaterials.TNT = indevMaterials[46]
+indevMaterials.Bookshelf = indevMaterials[47]
+indevMaterials.MossStone = indevMaterials[48]
+indevMaterials.Obsidian = indevMaterials[49]
+
+indevMaterials.Torch = indevMaterials[50, 0]
+indevMaterials.Fire = indevMaterials[51, 0]
+indevMaterials.InfiniteWater = indevMaterials[52, 0]
+indevMaterials.InfiniteLava = indevMaterials[53, 0]
+indevMaterials.Chest = indevMaterials[54, 0]
+indevMaterials.Cog = indevMaterials[55, 0]
+indevMaterials.DiamondOre = indevMaterials[56, 0]
+indevMaterials.BlockofDiamond = indevMaterials[57, 0]
+indevMaterials.CraftingTable = indevMaterials[58, 0]
+indevMaterials.Crops = indevMaterials[59, 0]
+indevMaterials.Farmland = indevMaterials[60, 0]
+indevMaterials.Furnace = indevMaterials[61, 0]
+indevMaterials.LitFurnace = indevMaterials[62, 0]
+
+# --- Pocket static block defs ---
+
+pocketMaterials.Air = pocketMaterials[0, 0]
+pocketMaterials.Stone = pocketMaterials[1, 0]
+pocketMaterials.Grass = pocketMaterials[2, 0]
+pocketMaterials.Dirt = pocketMaterials[3, 0]
+pocketMaterials.Cobblestone = pocketMaterials[4, 0]
+pocketMaterials.WoodPlanks = pocketMaterials[5, 0]
+pocketMaterials.Sapling = pocketMaterials[6, 0]
+pocketMaterials.SpruceSapling = pocketMaterials[6, 1]
+pocketMaterials.BirchSapling = pocketMaterials[6, 2]
+pocketMaterials.Bedrock = pocketMaterials[7, 0]
+pocketMaterials.Wateractive = pocketMaterials[8, 0]
+pocketMaterials.Water = pocketMaterials[9, 0]
+pocketMaterials.Lavaactive = pocketMaterials[10, 0]
+pocketMaterials.Lava = pocketMaterials[11, 0]
+pocketMaterials.Sand = pocketMaterials[12, 0]
+pocketMaterials.Gravel = pocketMaterials[13, 0]
+pocketMaterials.GoldOre = pocketMaterials[14, 0]
+pocketMaterials.IronOre = pocketMaterials[15, 0]
+pocketMaterials.CoalOre = pocketMaterials[16, 0]
+pocketMaterials.Wood = pocketMaterials[17, 0]
+pocketMaterials.PineWood = pocketMaterials[17, 1]
+pocketMaterials.BirchWood = pocketMaterials[17, 2]
+pocketMaterials.Leaves = pocketMaterials[18, 0]
+pocketMaterials.Glass = pocketMaterials[20, 0]
+
+pocketMaterials.LapisLazuliOre = pocketMaterials[21, 0]
+pocketMaterials.LapisLazuliBlock = pocketMaterials[22, 0]
+pocketMaterials.Sandstone = pocketMaterials[24, 0]
+pocketMaterials.Bed = pocketMaterials[26, 0]
+pocketMaterials.Web = pocketMaterials[30, 0]
+pocketMaterials.UnusedShrub = pocketMaterials[31, 0]
+pocketMaterials.TallGrass = pocketMaterials[31, 1]
+pocketMaterials.Shrub = pocketMaterials[31, 2]
+pocketMaterials.WhiteWool = pocketMaterials[35, 0]
+pocketMaterials.OrangeWool = pocketMaterials[35, 1]
+pocketMaterials.MagentaWool = pocketMaterials[35, 2]
+pocketMaterials.LightBlueWool = pocketMaterials[35, 3]
+pocketMaterials.YellowWool = pocketMaterials[35, 4]
+pocketMaterials.LightGreenWool = pocketMaterials[35, 5]
+pocketMaterials.PinkWool = pocketMaterials[35, 6]
+pocketMaterials.GrayWool = pocketMaterials[35, 7]
+pocketMaterials.LightGrayWool = pocketMaterials[35, 8]
+pocketMaterials.CyanWool = pocketMaterials[35, 9]
+pocketMaterials.PurpleWool = pocketMaterials[35, 10]
+pocketMaterials.BlueWool = pocketMaterials[35, 11]
+pocketMaterials.BrownWool = pocketMaterials[35, 12]
+pocketMaterials.DarkGreenWool = pocketMaterials[35, 13]
+pocketMaterials.RedWool = pocketMaterials[35, 14]
+pocketMaterials.BlackWool = pocketMaterials[35, 15]
+pocketMaterials.Flower = pocketMaterials[37, 0]
+pocketMaterials.Rose = pocketMaterials[38, 0]
+pocketMaterials.BrownMushroom = pocketMaterials[39, 0]
+pocketMaterials.RedMushroom = pocketMaterials[40, 0]
+pocketMaterials.BlockofGold = pocketMaterials[41, 0]
+pocketMaterials.BlockofIron = pocketMaterials[42, 0]
+pocketMaterials.DoubleStoneSlab = pocketMaterials[43, 0]
+pocketMaterials.DoubleSandstoneSlab = pocketMaterials[43, 1]
+pocketMaterials.DoubleWoodenSlab = pocketMaterials[43, 2]
+pocketMaterials.DoubleCobblestoneSlab = pocketMaterials[43, 3]
+pocketMaterials.DoubleBrickSlab = pocketMaterials[43, 4]
+pocketMaterials.StoneSlab = pocketMaterials[44, 0]
+pocketMaterials.SandstoneSlab = pocketMaterials[44, 1]
+pocketMaterials.WoodenSlab = pocketMaterials[44, 2]
+pocketMaterials.CobblestoneSlab = pocketMaterials[44, 3]
+pocketMaterials.BrickSlab = pocketMaterials[44, 4]
+pocketMaterials.Brick = pocketMaterials[45, 0]
+pocketMaterials.TNT = pocketMaterials[46, 0]
+pocketMaterials.Bookshelf = pocketMaterials[47, 0]
+pocketMaterials.MossStone = pocketMaterials[48, 0]
+pocketMaterials.Obsidian = pocketMaterials[49, 0]
+
+pocketMaterials.Torch = pocketMaterials[50, 0]
+pocketMaterials.Fire = pocketMaterials[51, 0]
+pocketMaterials.WoodenStairs = pocketMaterials[53, 0]
+pocketMaterials.Chest = pocketMaterials[54, 0]
+pocketMaterials.DiamondOre = pocketMaterials[56, 0]
+pocketMaterials.BlockofDiamond = pocketMaterials[57, 0]
+pocketMaterials.CraftingTable = pocketMaterials[58, 0]
+pocketMaterials.Crops = pocketMaterials[59, 0]
+pocketMaterials.Farmland = pocketMaterials[60, 0]
+pocketMaterials.Furnace = pocketMaterials[61, 0]
+pocketMaterials.LitFurnace = pocketMaterials[62, 0]
+pocketMaterials.WoodenDoor = pocketMaterials[64, 0]
+pocketMaterials.Ladder = pocketMaterials[65, 0]
+pocketMaterials.StoneStairs = pocketMaterials[67, 0]
+pocketMaterials.IronDoor = pocketMaterials[71, 0]
+pocketMaterials.RedstoneOre = pocketMaterials[73, 0]
+pocketMaterials.RedstoneOreGlowing = pocketMaterials[74, 0]
+pocketMaterials.SnowLayer = pocketMaterials[78, 0]
+pocketMaterials.Ice = pocketMaterials[79, 0]
+
+pocketMaterials.Snow = pocketMaterials[80, 0]
+pocketMaterials.Cactus = pocketMaterials[81, 0]
+pocketMaterials.Clay = pocketMaterials[82, 0]
+pocketMaterials.SugarCane = pocketMaterials[83, 0]
+pocketMaterials.Fence = pocketMaterials[85, 0]
+pocketMaterials.Glowstone = pocketMaterials[89, 0]
+pocketMaterials.InvisibleBedrock = pocketMaterials[95, 0]
+pocketMaterials.Trapdoor = pocketMaterials[96, 0]
+
+pocketMaterials.StoneBricks = pocketMaterials[98, 0]
+pocketMaterials.GlassPane = pocketMaterials[102, 0]
+pocketMaterials.Watermelon = pocketMaterials[103, 0]
+pocketMaterials.MelonStem = pocketMaterials[105, 0]
+pocketMaterials.FenceGate = pocketMaterials[107, 0]
+pocketMaterials.BrickStairs = pocketMaterials[108, 0]
+
+pocketMaterials.GlowingObsidian = pocketMaterials[246, 0]
+pocketMaterials.NetherReactor = pocketMaterials[247, 0]
+pocketMaterials.NetherReactorUsed = pocketMaterials[247, 1]
+
+# print "\n".join(["pocketMaterials.{0} = pocketMaterials[{1},{2}]".format(
+#                      b.name.replace(" ", "").replace("(","").replace(")",""),
+#                      b.ID, b.blockData)
+#                  for b in sorted(mats.pocketMaterials.allBlocks)])
+
+_indices = rollaxis(indices((256, 16)), 0, 3)
+
+
+def _filterTable(filters, unavailable, default=(0, 0)):
+    # a filter table is a 256x16 table of (ID, data) pairs.
+    table = zeros((256, 16, 2), dtype='uint8')
+    table[:] = _indices
+    for u in unavailable:
+        try:
+            if u[1] == 0:
+                u = u[0]
+        except TypeError:
+            pass
+        table[u] = default
+    for f, t in filters:
+        try:
+            if f[1] == 0:
+                f = f[0]
+        except TypeError:
+            pass
+        table[f] = t
+    return table
+
+nullConversion = lambda b, d: (b, d)
+
+
+def filterConversion(table):
+    def convert(blocks, data):
+        if data is None:
+            data = 0
+        t = table[blocks, data]
+        return t[..., 0], t[..., 1]
+
+    return convert
+
+
+def guessFilterTable(matsFrom, matsTo):
+    """ Returns a pair (filters, unavailable)
+    filters is a list of (from, to) pairs;  from and to are (ID, data) pairs
+    unavailable is a list of (ID, data) pairs in matsFrom not found in matsTo.
+
+    Searches the 'name' and 'aka' fields to find matches.
+    """
+    filters = []
+    unavailable = []
+    toByName = dict(((b.name, b) for b in sorted(matsTo.allBlocks, reverse=True)))
+    for fromBlock in matsFrom.allBlocks:
+        block = toByName.get(fromBlock.name)
+        if block is None:
+            for b in matsTo.allBlocks:
+                if b.name.startswith(fromBlock.name):
+                    block = b
+                    break
+        if block is None:
+            for b in matsTo.allBlocks:
+                if fromBlock.name in b.name:
+                    block = b
+                    break
+        if block is None:
+            for b in matsTo.allBlocks:
+                if fromBlock.name in b.aka:
+                    block = b
+                    break
+        if block is None:
+            if "Indigo Wool" == fromBlock.name:
+                block = toByName.get("Purple Wool")
+            elif "Violet Wool" == fromBlock.name:
+                block = toByName.get("Purple Wool")
+
+        if block:
+            if block != fromBlock:
+                filters.append(((fromBlock.ID, fromBlock.blockData), (block.ID, block.blockData)))
+        else:
+            unavailable.append((fromBlock.ID, fromBlock.blockData))
+
+    return filters, unavailable
+
+allMaterials = (alphaMaterials, classicMaterials, pocketMaterials, indevMaterials)
+
+_conversionFuncs = {}
+
+
+def conversionFunc(destMats, sourceMats):
+    if destMats is sourceMats:
+        return nullConversion
+    func = _conversionFuncs.get((destMats, sourceMats))
+    if func:
+        return func
+
+    filters, unavailable = guessFilterTable(sourceMats, destMats)
+    log.debug("")
+    log.debug("%s %s %s", sourceMats.name, "=>", destMats.name)
+    for a, b in [(sourceMats.blockWithID(*a), destMats.blockWithID(*b)) for a, b in filters]:
+        log.debug("{0:20}: \"{1}\"".format('"' + a.name + '"', b.name))
+
+    log.debug("")
+    log.debug("Missing blocks: %s", [sourceMats.blockWithID(*a).name for a in unavailable])
+
+    table = _filterTable(filters, unavailable, (35, 0))
+    func = filterConversion(table)
+    _conversionFuncs[(destMats, sourceMats)] = func
+    return func
+
+
+def convertBlocks(destMats, sourceMats, blocks, blockData):
+    if sourceMats == destMats:
+        return blocks, blockData
+
+    return conversionFunc(destMats, sourceMats)(blocks, blockData)
+
+namedMaterials = dict((i.name, i) for i in allMaterials)
+
+__all__ = "indevMaterials, pocketMaterials, alphaMaterials, classicMaterials, namedMaterials, MCMaterials".split(", ")

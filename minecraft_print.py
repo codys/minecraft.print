@@ -83,11 +83,11 @@ class MinecraftPrint:
                     #If so, define the diamond block coordinates as the marker and remove the marker from the map (along with everything above and below)
                     if dy > 1 and chunk.Blocks[dx, dz, dy - 1] == self.gold and chunk.Blocks[dx, dz, dy - 2] == self.iron:
                         self.markers.append([x_pos, z_pos, dx, dz, dy])
-                        for y in range(128):
+                        for y in range(256):
                             chunk.Blocks[dx, dz, y] = 0
                     elif dy < 126 and chunk.Blocks[dx, dz, dy + 1] == self.gold and chunk.Blocks[dx, dz, dy + 2] == self.iron:
                         self.markers.append([x_pos, z_pos, dx, dz, dy])
-                        for y in range(128):
+                        for y in range(256):
                             chunk.Blocks[dx, dz, y] = 0
     
     def copy_marked_area(self):
@@ -150,7 +150,10 @@ class MinecraftPrint:
         filename = self.output_name
 
         width = len(self.object_array)
-        height = len(self.object_array[0])
+        try:
+            height = len(self.object_array[0])
+        except:
+            print self.object_array
         depth = len(self.object_array[0][0])    
 
         str_o = "solid Minecraft\n";
