@@ -3,7 +3,7 @@ Minecraft.Print() is a python library for converting defined regions of Minecraf
 
 
 ---REQUIREMENTS/SETUP---
-python    - (http://www.python.org/download/releases/2.6.6/)
+python    - (http://www.python.org/download/releases/2.7.3/)
 numpy     - (http://sourceforge.net/projects/numpy/files/OldFiles/ or http://docs.scipy.org/doc/numpy/user/install.html)
 pyyaml    - (http://pypi.python.org/pypi/PyYAML)
 pymclevel - (already included)
