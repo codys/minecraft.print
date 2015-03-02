@@ -85,10 +85,12 @@ class MinecraftPrint:
                         self.markers.append([x_pos, z_pos, dx, dz, dy])
                         for y in range(256):
                             chunk.Blocks[dx, dz, y] = 0
+                        chunk.chunkChanged()
                     elif dy < 126 and chunk.Blocks[dx, dz, dy + 1] == self.gold and chunk.Blocks[dx, dz, dy + 2] == self.iron:
                         self.markers.append([x_pos, z_pos, dx, dz, dy])
                         for y in range(256):
                             chunk.Blocks[dx, dz, y] = 0
+                        chunk.chunkChanged()
     
     def copy_marked_area(self):
         #Now we have the markers. Time to get serious 
